@@ -1,0 +1,103 @@
+{
+  "name": "omp-cliproxy-usage",
+  "version": "0.1.0",
+  "description": "omp plugin: real token cost and subscription quota for models served through CLIProxyAPI with the cliproxy-costs plugin",
+  "license": "MIT",
+  "author": "Alex Markessinis <alex@markessinis.me>",
+  "type": "module",
+  "keywords": ["omp", "omp-plugin", "cliproxyapi", "usage", "cost"],
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "files": ["src", "README.md", "LICENSE"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "omp": {
+    "extensions": ["./src/extension.ts"],
+    "settings": {
+      "provider": {
+        "type": "string",
+        "default": "cliproxy",
+        "description": "omp provider id (models.yml) that points at CLIProxyAPI"
+      },
+      "baseUrl": {
+        "type": "string",
+        "description": "CLIProxyAPI root URL; default = the provider base URL without a trailing /v1"
+      },
+      "tokenEnv": {
+        "type": "string",
+        "default": "CLIPROXY_USAGE_TOKEN",
+        "description": "Name of the environment variable holding the cliproxy-costs read token"
+      },
+      "apiKeyEnv": {
+        "type": "string",
+        "description": "Environment variable NAME of the provider's inference key (same value as models.yml apiKey); required for rates and quota"
+      },
+      "rates": {
+        "type": "enum",
+        "values": ["cpa", "feed", "off"],
+        "default": "cpa",
+        "description": "Rate source: cliproxy-costs (with snapshot/feed fallback), the public feed only, or no pricing"
+      },
+      "feedUrl": {
+        "type": "string",
+        "default": "https://catalog.stencil.so/models.json.zstd",
+        "description": "Pricing feed used as the last fallback"
+      },
+      "aliases": {
+        "type": "string",
+        "default": "{}",
+        "description": "JSON object mapping model id -> \"<catalog provider>/<catalog model>\" for the feed fallback"
+      },
+      "reconcile": {
+        "type": "boolean",
+        "default": false,
+        "description": "Look up what CLIProxyAPI recorded for each request of the session and show it next to omp's estimate"
+      },
+      "display": {
+        "type": "enum",
+        "values": ["status", "widget", "both", "off"],
+        "default": "status",
+        "description": "Where quota is shown"
+      },
+      "staleAfterMinutes": {
+        "type": "number",
+        "default": 30,
+        "min": 1,
+        "description": "Quota observations older than this are shown as stale"
+      },
+      "refreshSeconds": {
+        "type": "number",
+        "default": 60,
+        "min": 15,
+        "description": "Status/widget refresh interval"
+      },
+      "startupTimeoutMs": {
+        "type": "number",
+        "default": 1500,
+        "min": 100,
+        "max": 10000,
+        "description": "Maximum time the extension waits for rates at startup"
+      },
+      "driftWarnPct": {
+        "type": "number",
+        "default": 10,
+        "min": 0,
+        "description": "Warn once per session when omp's estimate and CLIProxyAPI's recorded cost differ by more than this percentage"
+      },
+      "currency": {
+        "type": "string",
+        "default": "",
+        "description": "ISO 4217 code for the plugin's status, widget and report (e.g. EUR, CNY); empty = the CLIProxyAPI display currency. omp's own costs stay USD"
+      }
+    }
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "18.4.4",
+    "@oh-my-pi/pi-coding-agent": "18.4.4",
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}
