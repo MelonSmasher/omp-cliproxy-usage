@@ -96,6 +96,37 @@ describe("Reconciler", () => {
 		expect(r.totals().traces).toBe(0);
 	});
 
+	// CPA contributes nothing for a missing or unpriced trace while omp still
+	// counts it; a drift warning then would be false and use up the session's
+	// single warning before a real one.
+	test("no drift is reported while a trace is missing or unpriced, and a later real drift still is", async () => {
+		const unpriced = { trace_id: LATER, status: "complete", cost_usd: null, attempts: [{ request_id: "r2", model: "free", tokens: {}, cost: null }] };
+		mock = startCpaMock({ token: TOKEN, traces: { [DONE]: traceDone, [LATER]: unpriced } });
+		const client = new CpaClient({ baseUrl: mock.url, token: () => TOKEN });
+		const omp = { usd: 0.002, byModel: new Map() };
+
+		const withUnpriced = new Reconciler();
+		withUnpriced.add(DONE);
+		withUnpriced.add(LATER);
+		await withUnpriced.lookup(client);
+		expect(withUnpriced.checkDrift(omp, 10)).toBeUndefined();
+
+		let now = 1_000_000;
+		const withMissing = new Reconciler(() => now);
+		withMissing.add(DONE);
+		withMissing.add("01a0f377-0000-7000-8000-00000000dead");
+		now += PENDING_GIVE_UP_MS + 1;
+		await withMissing.lookup(client);
+		expect(withMissing.totals().missing).toBe(1);
+		expect(withMissing.checkDrift(omp, 10)).toBeUndefined();
+
+		// Once everything is found and priced, the warning still fires.
+		const clean = new Reconciler();
+		clean.add(DONE);
+		await clean.lookup(client);
+		expect(clean.checkDrift(omp, 10)).toBeCloseTo(32, 5);
+	});
+
 	test("restore rebuilds traces from session entries and ignores foreign ones", () => {
 		const r = new Reconciler();
 		r.restore([

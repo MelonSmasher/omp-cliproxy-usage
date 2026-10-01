@@ -143,7 +143,7 @@ export class Reconciler {
 		if (t.status !== "complete") return;
 		tracked.state = "complete";
 		tracked.cost = t.cost_usd;
-		tracked.unpriced = t.attempts.some(a => a.cost === null);
+		tracked.unpriced = t.cost_usd === null || t.attempts.some(a => a.cost === null);
 		for (const a of t.attempts) {
 			if (!a.cost) continue;
 			tracked.byModel.set(a.model, (tracked.byModel.get(a.model) ?? 0) + a.cost.total);
@@ -174,13 +174,16 @@ export class Reconciler {
 	}
 
 	/**
-	 * Returns the drift percentage once per session when every trace is settled
-	 * and |drift| exceeds the threshold; undefined otherwise.
+	 * Returns the drift percentage once per session when every trace is settled,
+	 * all of them were found and priced, and |drift| exceeds the threshold;
+	 * undefined otherwise. Missing or unpriced traces add nothing to CPA's side
+	 * while omp still counts them, so comparing then would report false drift
+	 * and use up the once-per-session warning.
 	 */
 	checkDrift(omp: OmpEstimate, thresholdPct: number): number | undefined {
 		if (this.#driftNotified) return undefined;
 		const totals = this.totals();
-		if (totals.complete === 0 || totals.pending > 0) return undefined;
+		if (totals.complete === 0 || totals.pending > 0 || totals.missing > 0 || totals.unpriced) return undefined;
 		const drift = driftPct(totals.cpaUsd, omp.usd);
 		if (drift === null || Math.abs(drift) <= thresholdPct) return undefined;
 		this.#driftNotified = true;
