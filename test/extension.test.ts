@@ -139,6 +139,10 @@ describe("extension factory", () => {
 	afterEach(async () => {
 		await mock?.stop();
 		mock = undefined;
+		// Bun runs every test file in one process; `= undefined` would leave the
+		// string "undefined" set, so delete.
+		delete process.env.CPA_TEST_KEY;
+		delete process.env.CLIPROXY_MANAGEMENT_KEY;
 	});
 
 	for (const [status, setup] of [
