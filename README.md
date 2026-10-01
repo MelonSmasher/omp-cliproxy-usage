@@ -20,7 +20,9 @@ be installed on the CPA side.
 
 - omp 18.4.4 (other versions run with one warning; see [Verifying](#verifying))
 - Bun ≥ 1.3.14 (bundled with omp)
-- A CPA running `cliproxy-costs` with its read API enabled
+- A CPA running `cliproxy-costs`, and that CPA's management key
+  (`remote-management.secret-key`); `cliproxy-costs` serves its data only
+  under CPA's management API (`/v0/management/cliproxy-costs/v1/`)
 - An omp provider in `models.yml` pointing at CPA, for example:
 
   ```yaml
@@ -50,16 +52,33 @@ omp plugin config set omp-cliproxy-usage apiKeyEnv CLIPROXY_API_KEY
 omp plugin config set omp-cliproxy-usage baseUrl https://cpa.example.com
 ```
 
-The read token is taken **only** from the environment:
+The plugin authenticates to CPA with CPA's **management key**, taken **only**
+from the environment and read again on every request:
 
 ```sh
-export CLIPROXY_USAGE_TOKEN=<the cliproxy-costs read token>
+export CLIPROXY_MANAGEMENT_KEY=<CPA's management key>
 ```
 
-Never store it with `omp plugin config set`. omp keeps plugin settings in
+When CPA runs on another host, CPA must also allow remote management
+(`management.allow-remote: true` in CPA's `config.yaml`; `remote-management.allow-remote`
+in pre-v8 configs); otherwise it
+answers `403` to every request from omp.
+
+Never store the key with `omp plugin config set`. omp keeps plugin settings in
 plain text (`omp-plugins.lock.json`, `plugin-overrides.json`), and there is no
-omp secret store. The plugin declares no token setting, and it never writes the
-token to settings, logs, session files, snapshots or usage reports.
+omp secret store. The plugin declares no key setting, and it never writes the
+key to settings, logs, session files, snapshots or usage reports.
+
+**Wrong keys and CPA's IP block.** CPA blocks a client IP for about 30 minutes
+after 5 wrong management keys, and every further attempt with a wrong key
+extends the block. So after the first `401` or `403` the plugin sends **no
+further request** to CPA (rates, quota, fx, request lookups, the refresh timer,
+`/cliproxy-usage refresh`) and logs one warning. Until the key is accepted
+once, requests go out one at a time, so one wrong key costs one attempt.
+Rates keep coming from the local snapshot or the pricing feed, and the last
+cached quota stays visible, marked stale. Fix the key (or wait out the block),
+then restart omp; the stop lasts for the life of the omp process, which is
+also the only time the environment variable can change.
 
 ### Settings
 
@@ -67,7 +86,7 @@ token to settings, logs, session files, snapshots or usage reports.
 | --- | --- | --- |
 | `provider` | `cliproxy` | omp provider id (the `models.yml` provider that points at CPA) |
 | `baseUrl` | provider base URL without a trailing `/v1` | CPA root URL |
-| `tokenEnv` | `CLIPROXY_USAGE_TOKEN` | Name of the env var holding the read token |
+| `managementKeyEnv` | `CLIPROXY_MANAGEMENT_KEY` | Name of the env var holding CPA's management key |
 | `apiKeyEnv` | — (**required**) | Name of the env var holding the provider's inference key, the same value as `apiKey` in `models.yml` |
 | `rates` | `cpa` | `cpa` (with snapshot/feed fallback), `feed` (public feed only), `off` |
 | `feedUrl` | `https://catalog.stencil.so/models.json.zstd` | Pricing feed used as the last fallback |
@@ -238,10 +257,10 @@ should be empty. Run it after upgrading omp.
 | Symptom | Cause |
 | --- | --- |
 | `setting "apiKeyEnv" is unset` | Set `apiKeyEnv` to the env var name used as `apiKey` in `models.yml` |
-| `read token env var … is not set` | Export the variable named by `tokenEnv` before starting omp |
-| `read token rejected (401)` | The token differs from the one configured on the CPA side |
-| `read API disabled on the CPA side (503)` | `cliproxy-costs` has no read token configured |
-| `route not found (404)` | `cliproxy-costs` is not loaded in that CPA, or `baseUrl` is wrong |
+| `management key env var … is not set` | Export the variable named by `managementKeyEnv` before starting omp |
+| `management key rejected (401)` | The key differs from CPA's `management.secret-key` (`remote-management.secret-key` in pre-v8 configs). The plugin stopped calling CPA; fix the key and restart omp |
+| `CPA refused management access (403)` | CPA blocked this IP after repeated wrong keys (about 30 minutes; each retry extends it), or CPA is remote without `management.allow-remote: true`. The plugin stopped calling CPA; fix the cause and restart omp |
+| `route not found (404)` | `cliproxy-costs` is not loaded in that CPA (or predates the management routes), or `baseUrl` is wrong |
 | `provider "…" has no models` | Wrong `provider` id, or discovery has not run yet (start omp once online) |
 | No quota in the status line | `status` is missing from `statusLine.*Segments`, or `display` is `widget`/`off` |
 | `$?` in the status | Some models have no rate; `/cliproxy-usage` lists them |
@@ -261,10 +280,10 @@ bun test
 ```
 
 Tests run against the pinned omp packages (devDependencies) with a throwaway
-agent directory (`test/preload.ts`) and a mock of the `cliproxy-costs` read API
-(`test/fixtures/cpa-mock.ts`, built from the vendored contract examples in
-`test/fixtures/contract/`). You can also run the mock on its own:
-`MOCK_TOKEN=<32+ chars> bun test/fixtures/cpa-mock.ts`.
+agent directory (`test/preload.ts`) and a mock of CPA's management API serving
+the `cliproxy-costs` routes (`test/fixtures/cpa-mock.ts`, built from the
+vendored contract examples in `test/fixtures/contract/`). You can also run the
+mock on its own: `MOCK_KEY=<32+ chars> bun test/fixtures/cpa-mock.ts`.
 
 ## License
 

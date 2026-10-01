@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { CpaClient } from "../src/cpa-client";
 import { ompEstimate, PENDING_GIVE_UP_MS, parseTraceId, Reconciler, TRACE_ENTRY_TYPE } from "../src/reconcile";
 import { type CpaMock, startCpaMock } from "./fixtures/cpa-mock";
-import { TOKEN } from "./helpers";
+import { KEY } from "./helpers";
 
 const DONE = "01a0f377-da29-7269-bbc8-f6c7ce1ca506";
 const LATER = "01a0f377-0000-7000-8000-000000000000";
@@ -31,8 +31,8 @@ describe("Reconciler", () => {
 	};
 
 	test("complete traces are summed; pending ones are retried, never counted as zero, and give up after the window", async () => {
-		mock = startCpaMock({ token: TOKEN, traces: { [DONE]: traceDone } });
-		const client = new CpaClient({ baseUrl: mock.url, token: () => TOKEN });
+		mock = startCpaMock({ managementKey: KEY, traces: { [DONE]: traceDone } });
+		const client = new CpaClient({ baseUrl: mock.url, managementKey: () => KEY });
 		let now = 1_000_000;
 		const r = new Reconciler(() => now);
 		expect(r.add(DONE)).toBe(true);
@@ -61,26 +61,26 @@ describe("Reconciler", () => {
 	});
 
 	test("lookup errors keep traces pending and surface a redacted error", async () => {
-		mock = startCpaMock({ token: TOKEN });
+		mock = startCpaMock({ managementKey: KEY });
 		const r = new Reconciler();
 		r.add(DONE);
-		await r.lookup(new CpaClient({ baseUrl: mock.url, token: () => "wrong-token-value-wrong-token-value" }));
+		await r.lookup(new CpaClient({ baseUrl: mock.url, managementKey: () => "wrong-key-value-wrong-key-value" }));
 		expect(r.totals().pending).toBe(1);
 		expect(r.lastError).toContain("401");
-		expect(r.lastError).not.toContain("wrong-token-value");
+		expect(r.lastError).not.toContain("wrong-key-value");
 	});
 
 	test("batches more than 100 pending traces into several requests", async () => {
-		mock = startCpaMock({ token: TOKEN, traces: {} });
+		mock = startCpaMock({ managementKey: KEY, traces: {} });
 		const r = new Reconciler();
 		for (let i = 0; i < 205; i++) r.add(`t-${i}`);
-		await r.lookup(new CpaClient({ baseUrl: mock.url, token: () => TOKEN }));
+		await r.lookup(new CpaClient({ baseUrl: mock.url, managementKey: () => KEY }));
 		expect(mock.seen.map(s => s.split("%2C").length)).toEqual([100, 100, 5]);
 	});
 
 	test("drift is reported once per session, only after every trace settled and beyond the threshold", async () => {
-		mock = startCpaMock({ token: TOKEN, traces: { [DONE]: traceDone } });
-		const client = new CpaClient({ baseUrl: mock.url, token: () => TOKEN });
+		mock = startCpaMock({ managementKey: KEY, traces: { [DONE]: traceDone } });
+		const client = new CpaClient({ baseUrl: mock.url, managementKey: () => KEY });
 		const r = new Reconciler();
 		r.add(DONE);
 		r.add(LATER);
@@ -101,8 +101,8 @@ describe("Reconciler", () => {
 	// single warning before a real one.
 	test("no drift is reported while a trace is missing or unpriced, and a later real drift still is", async () => {
 		const unpriced = { trace_id: LATER, status: "complete", cost_usd: null, attempts: [{ request_id: "r2", model: "free", tokens: {}, cost: null }] };
-		mock = startCpaMock({ token: TOKEN, traces: { [DONE]: traceDone, [LATER]: unpriced } });
-		const client = new CpaClient({ baseUrl: mock.url, token: () => TOKEN });
+		mock = startCpaMock({ managementKey: KEY, traces: { [DONE]: traceDone, [LATER]: unpriced } });
+		const client = new CpaClient({ baseUrl: mock.url, managementKey: () => KEY });
 		const omp = { usd: 0.002, byModel: new Map() };
 
 		const withUnpriced = new Reconciler();

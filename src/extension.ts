@@ -8,7 +8,7 @@ import { createQuotaProvider } from "./quota";
 import { cardToCost, type RateSet, rateSignature, resolveRates } from "./rates";
 import { ompEstimate, parseTraceId, Reconciler, TRACE_ENTRY_TYPE, type TraceEntryData } from "./reconcile";
 import { readRoster, type Roster, toRegisteredModel } from "./roster";
-import { loadSettings, PLUGIN_NAME, readToken, type Settings } from "./settings";
+import { loadSettings, managementKey, PLUGIN_NAME, type Settings } from "./settings";
 import { SnapshotStore } from "./snapshot";
 import { reportMarkdown, STATUS_KEY, statusText, WIDGET_KEY, widgetLines } from "./ui";
 
@@ -86,7 +86,19 @@ export default async function cliproxyUsage(pi: ExtensionAPI): Promise<void> {
 	};
 
 	const makeClient = (baseUrl: string) =>
-		new CpaClient({ baseUrl, token: () => readToken(state.settings), fetch: fetchImpl });
+		new CpaClient({
+			baseUrl,
+			managementKey: () => managementKey(state.settings),
+			fetch: fetchImpl,
+			// The client sends nothing more after this; one warning replaces the per-route ones.
+			onAuthFailure: error =>
+				warn(
+					state,
+					`${error.message}; stopped all CPA requests until omp restarts (each retry with a wrong key extends CPA's IP block). Using snapshot/feed rates and cached quota`,
+				),
+		});
+	/** True for the 401/403 that stopped the client: already warned about once. */
+	const isAuthStop = (message: string) => message === state.client?.authFailure?.message;
 
 	const quotaProvider = (): UsageProvider | undefined => {
 		const client = state.client;
@@ -105,7 +117,7 @@ export default async function cliproxyUsage(pi: ExtensionAPI): Promise<void> {
 			},
 			onError: message => {
 				recordError(message);
-				warn(state, message);
+				if (!isAuthStop(message)) warn(state, message);
 			},
 			fallback: async () => (await state.store.loadQuota(settings.provider, client.baseUrl))?.quota ?? null,
 		});
@@ -143,7 +155,8 @@ export default async function cliproxyUsage(pi: ExtensionAPI): Promise<void> {
 			);
 			rates = result.rates;
 			for (const e of result.errors) recordError(e);
-			if (result.errors.length > 0) {
+			// After a 401/403 the fallback source is expected; the auth warning already says so.
+			if (result.errors.length > 0 && !(rates && state.client.authFailure)) {
 				warn(state, rates ? `rates from ${rates.source} (${result.errors[0]})` : `no rates available (${result.errors.join("; ")})`);
 			}
 		}
@@ -201,8 +214,8 @@ export default async function cliproxyUsage(pi: ExtensionAPI): Promise<void> {
 	if (!settings.apiKeyEnv) {
 		warn(state, 'setting "apiKeyEnv" is unset: rates and quota are disabled (see README)');
 	} else {
-		if (!readToken(settings) && settings.rates === "cpa") {
-			warn(state, `read token env var ${settings.tokenEnv} is not set; using snapshot/feed rates and no quota`);
+		if (!managementKey(settings) && settings.rates === "cpa") {
+			warn(state, `management key env var ${settings.managementKeyEnv} is not set; using snapshot/feed rates and no quota`);
 		}
 		await syncRates(settings.startupTimeoutMs, true);
 		if (!state.roster?.models.length) registerUsageOnly();
@@ -222,7 +235,7 @@ export default async function cliproxyUsage(pi: ExtensionAPI): Promise<void> {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "quota fetch failed";
 			recordError(message);
-			warn(state, message);
+			if (!isAuthStop(message)) warn(state, message);
 			if (!state.quota) {
 				const snap = await state.store.loadQuota(settings.provider, state.client.baseUrl);
 				if (snap) {
@@ -250,7 +263,7 @@ export default async function cliproxyUsage(pi: ExtensionAPI): Promise<void> {
 			const message = error instanceof Error ? error.message : "fx fetch failed";
 			recordError(message);
 			// Without a `currency` setting, a CPA lacking `fx` (older cliproxy-costs) just means USD.
-			if (settings.currency) warn(state, message);
+			if (settings.currency && !isAuthStop(message)) warn(state, message);
 			if (!state.fx) {
 				const snap = await state.store.loadFx(state.client.baseUrl);
 				if (snap) state.fx = snap.fx;

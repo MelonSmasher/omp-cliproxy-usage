@@ -1,11 +1,11 @@
 import {
+	API_PREFIX,
 	type FxResponse,
 	isErrorResponse,
 	isFxResponse,
 	isQuotaResponse,
 	isRatesResponse,
 	isRequestsResponse,
-	READ_API_PREFIX,
 	type QuotaResponse,
 	type RatesResponse,
 	type RequestsResponse,
@@ -14,18 +14,18 @@ import {
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export type CpaErrorKind =
-	| "no_token" // token env var unset
-	| "unauthorized" // 401
-	| "disabled" // 503 read_api_disabled
-	| "not_installed" // 404 on the route: plugin missing on the CPA side
+	| "no_key" // management key env var unset
+	| "unauthorized" // 401: wrong or missing management key
+	| "forbidden" // 403: IP blocked after repeated wrong keys, or remote management disabled
+	| "not_installed" // 404 with a body that is not the plugin's: plugin missing on the CPA side
 	| "http" // any other non-2xx
 	| "network" // connection refused, DNS, TLS…
 	| "timeout"
 	| "schema"; // 2xx with a body that does not match the contract
 
 /**
- * Error raised by every read-route call. The message names the route and the
- * failure class only: never the token, never the query string, never the host
+ * Error raised by every data-route call. The message names the route and the
+ * failure class only: never the key, never the query string, never the host
  * error text (which can echo request details).
  */
 export class CpaError extends Error {
@@ -41,12 +41,12 @@ export class CpaError extends Error {
 
 function describe(kind: CpaErrorKind, status: number | undefined): string {
 	switch (kind) {
-		case "no_token":
-			return "read token not set";
+		case "no_key":
+			return "management key not set";
 		case "unauthorized":
-			return "read token rejected (401)";
-		case "disabled":
-			return "read API disabled on the CPA side (503)";
+			return "management key rejected (401)";
+		case "forbidden":
+			return "CPA refused management access (403): the IP is temporarily blocked after repeated wrong keys, or remote management is disabled";
 		case "not_installed":
 			return "route not found (404); is cliproxy-costs installed?";
 		case "http":
@@ -63,28 +63,50 @@ function describe(kind: CpaErrorKind, status: number | undefined): string {
 export interface CpaClientOptions {
 	/** CPA root URL, e.g. `http://localhost:8317` (no trailing `/v1`). */
 	baseUrl: string;
-	/** Returns the read token at call time (never cached by the client). */
-	token: () => string | undefined;
+	/** Returns the CPA management key at call time (never cached by the client). */
+	managementKey: () => string | undefined;
 	fetch?: FetchLike;
 	timeoutMs?: number;
+	/** Called once, when the client stops after a 401/403. */
+	onAuthFailure?: (error: CpaError) => void;
 }
 
-/** Client for the cliproxy-costs read routes (`/v0/resource/plugins/cliproxy-costs/api/v1/*`). */
+/**
+ * Client for the cliproxy-costs data routes (`/v0/management/cliproxy-costs/v1/*`).
+ *
+ * CPA blocks a client IP after 5 wrong management keys and every further wrong
+ * key extends the block. So until CPA has accepted the key once, requests run
+ * one at a time; after the first 401 or 403 the client sends nothing more on
+ * any route: every later call rethrows that error without touching the
+ * network. Only a new client (plugin reload) clears it.
+ */
 export class CpaClient {
 	readonly #baseUrl: string;
-	readonly #token: () => string | undefined;
+	readonly #managementKey: () => string | undefined;
 	readonly #fetch: FetchLike;
 	readonly #timeoutMs: number;
+	readonly #onAuthFailure: ((error: CpaError) => void) | undefined;
+	#authFailure: CpaError | undefined;
+	/** CPA answered 2xx once, so the key is good and requests may overlap. */
+	#keyAccepted = false;
+	/** Tail of the one-at-a-time queue used until the key is accepted. */
+	#queue: Promise<unknown> = Promise.resolve();
 
 	constructor(options: CpaClientOptions) {
 		this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
-		this.#token = options.token;
+		this.#managementKey = options.managementKey;
 		this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
 		this.#timeoutMs = options.timeoutMs ?? 5_000;
+		this.#onAuthFailure = options.onAuthFailure;
 	}
 
 	get baseUrl(): string {
 		return this.#baseUrl;
+	}
+
+	/** The 401/403 that stopped this client, if any. */
+	get authFailure(): CpaError | undefined {
+		return this.#authFailure;
 	}
 
 	async rates(models: readonly string[], signal?: AbortSignal): Promise<RatesResponse> {
@@ -107,23 +129,39 @@ export class CpaClient {
 		return this.#get("requests", `trace_id=${traceIds.map(encodeURIComponent).join(",")}`, isRequestsResponse, signal);
 	}
 
-	async #get<T>(route: string, query: string, guard: (v: unknown) => v is T, signal?: AbortSignal): Promise<T> {
-		const token = this.#token();
-		if (!token) throw new CpaError("no_token", route);
+	#get<T>(route: string, query: string, guard: (v: unknown) => v is T, signal?: AbortSignal): Promise<T> {
+		if (this.#keyAccepted) return this.#send(route, query, guard, signal);
+		const result = this.#queue.then(() => this.#send(route, query, guard, signal));
+		this.#queue = result.catch(() => undefined);
+		return result;
+	}
+
+	async #send<T>(route: string, query: string, guard: (v: unknown) => v is T, signal?: AbortSignal): Promise<T> {
+		if (this.#authFailure) throw this.#authFailure;
+		const key = this.#managementKey();
+		if (!key) throw new CpaError("no_key", route);
 		const timeout = AbortSignal.timeout(this.#timeoutMs);
 		const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-		const url = `${this.#baseUrl}${READ_API_PREFIX}/${route}${query ? `?${query}` : ""}`;
+		const url = `${this.#baseUrl}${API_PREFIX}/${route}${query ? `?${query}` : ""}`;
 		let response: Response;
 		try {
 			response = await this.#fetch(url, {
 				method: "GET",
-				headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+				headers: { Accept: "application/json", Authorization: `Bearer ${key}` },
 				signal: combined,
 			});
 		} catch {
 			if (timeout.aborted) throw new CpaError("timeout", route);
 			if (signal?.aborted) throw signal.reason;
 			throw new CpaError("network", route);
+		}
+		if (response.status === 401 || response.status === 403) {
+			// Latch on the status alone; the body is CPA's, not the plugin's.
+			if (!this.#authFailure) {
+				this.#authFailure = new CpaError(response.status === 401 ? "unauthorized" : "forbidden", route, response.status);
+				this.#onAuthFailure?.(this.#authFailure);
+			}
+			throw this.#authFailure;
 		}
 		let body: unknown;
 		try {
@@ -133,12 +171,12 @@ export class CpaClient {
 			if (timeout.aborted) throw new CpaError("timeout", route);
 		}
 		if (!response.ok) {
+			// CPA's own 404 (no such management route) is not plugin-shaped.
 			const code = isErrorResponse(body) ? body.error.code : undefined;
-			if (response.status === 401) throw new CpaError("unauthorized", route, 401);
-			if (response.status === 503 && code === "read_api_disabled") throw new CpaError("disabled", route, 503);
 			if (response.status === 404 && code !== "not_found") throw new CpaError("not_installed", route, 404);
 			throw new CpaError("http", route, response.status);
 		}
+		this.#keyAccepted = true;
 		if (!guard(body)) throw new CpaError("schema", route, response.status);
 		return body;
 	}

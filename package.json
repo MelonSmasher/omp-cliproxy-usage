@@ -26,10 +26,10 @@
         "type": "string",
         "description": "CLIProxyAPI root URL; default = the provider base URL without a trailing /v1"
       },
-      "tokenEnv": {
+      "managementKeyEnv": {
         "type": "string",
-        "default": "CLIPROXY_USAGE_TOKEN",
-        "description": "Name of the environment variable holding the cliproxy-costs read token"
+        "default": "CLIPROXY_MANAGEMENT_KEY",
+        "description": "Name of the environment variable holding the CLIProxyAPI management key (cliproxy-costs data is served under CPA's management API)"
       },
       "apiKeyEnv": {
         "type": "string",

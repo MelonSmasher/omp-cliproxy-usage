@@ -1,17 +1,21 @@
-// Bun.serve mock of the cliproxy-costs read API (contract schema 1), built from
-// the vendored contract examples. Used by tests; also runnable standalone for
-// manual omp checks:  MOCK_TOKEN=<32+ chars> bun test/fixtures/cpa-mock.ts
+// Bun.serve mock of the cliproxy-costs data API (contract schema 1) behind
+// CPA's management API, built from the vendored contract examples. Used by
+// tests; also runnable standalone for manual omp checks:
+//   MOCK_KEY=<32+ chars> bun test/fixtures/cpa-mock.ts
+import { API_PREFIX } from "../../src/contract";
 import fxFixture from "./contract/fx.json";
 import quotaFixture from "./contract/quota.json";
 import ratesFixture from "./contract/rates.json";
 import requestsFixture from "./contract/requests.json";
 
-const PREFIX = "/v0/resource/plugins/cliproxy-costs/api/v1/";
+const PREFIX = `${API_PREFIX}/`;
 
-export type Fault = "none" | "slow" | "disabled" | "schema" | "500";
+/** `forbidden`: CPA's 403 (IP blocked after wrong keys, or remote management off). */
+export type Fault = "none" | "slow" | "forbidden" | "schema" | "500";
 
 export interface MockOptions {
-	token: string;
+	/** CPA management key the mock accepts. */
+	managementKey: string;
 	port?: number;
 	/** Rate cards by model id; defaults to the contract example. */
 	rates?: typeof ratesFixture.models;
@@ -26,7 +30,7 @@ export interface MockOptions {
 export interface CpaMock {
 	url: string;
 	fault: Fault;
-	/** Requests seen, as `<route>?<query>` (never headers). */
+	/** Requests seen, as `<route>?<query>` (never headers); includes rejected ones. */
 	seen: string[];
 	/** Replace the mock's data at runtime. */
 	options: MockOptions;
@@ -57,17 +61,16 @@ export function startCpaMock(options: MockOptions): CpaMock {
 		hostname: "127.0.0.1",
 		async fetch(req) {
 			const url = new URL(req.url);
-			if (!url.pathname.startsWith(PREFIX)) return error(404, "not_found", "no such route");
+			// CPA itself answers unknown routes and auth failures, not in the plugin's error shape.
+			if (!url.pathname.startsWith(PREFIX)) return new Response("404 page not found", { status: 404 });
 			const route = url.pathname.slice(PREFIX.length);
 			mock.seen.push(`${route}?${url.searchParams.toString()}`);
 			if (mock.fault === "slow") await Bun.sleep(mock.options.slowMs ?? 5_000);
-			if (mock.fault === "disabled") return error(503, "read_api_disabled", "read API disabled");
-			if (mock.fault === "500") return error(500, "internal", "boom");
+			if (mock.fault === "forbidden") return json(403, { error: "IP banned due to too many failed attempts. Try again later." });
 			const auth = req.headers.get("authorization") ?? "";
 			const m = /^bearer\s+(.+)$/i.exec(auth);
-			if (!m || m[1] !== mock.options.token) {
-				return error(401, "unauthorized", "missing or invalid read token", { "WWW-Authenticate": "Bearer" });
-			}
+			if (!m || m[1] !== mock.options.managementKey) return json(401, { error: "invalid management key" });
+			if (mock.fault === "500") return error(500, "internal", "boom");
 			if (mock.fault === "schema") return json(200, { schema: 2 });
 			switch (route) {
 				case "rates": {
@@ -116,11 +119,11 @@ export function startCpaMock(options: MockOptions): CpaMock {
 }
 
 if (import.meta.main) {
-	const token = process.env.MOCK_TOKEN;
-	if (!token || token.length < 32) {
-		console.error("MOCK_TOKEN (>= 32 chars) required");
+	const managementKey = process.env.MOCK_KEY;
+	if (!managementKey || managementKey.length < 32) {
+		console.error("MOCK_KEY (>= 32 chars) required");
 		process.exit(1);
 	}
-	const mock = startCpaMock({ token, port: Number(process.env.MOCK_PORT ?? 0) });
+	const mock = startCpaMock({ managementKey, port: Number(process.env.MOCK_PORT ?? 0) });
 	console.log(`cpa mock on ${mock.url}`);
 }
