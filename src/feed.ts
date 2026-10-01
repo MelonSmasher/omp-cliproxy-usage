@@ -1,3 +1,4 @@
+import { createZstdDecompress } from "node:zlib";
 import type { RateModel, RateTier, Rates } from "./contract";
 import type { FetchLike } from "./cpa-client";
 import type { FeedCache, SnapshotStore } from "./snapshot";
@@ -6,7 +7,57 @@ import type { FeedCache, SnapshotStore } from "./snapshot";
 export const FEED_SEARCH_ORDER = ["anthropic", "openai", "google"] as const;
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
-const MAX_DECODED_BYTES = 64 * 1024 * 1024;
+/** Cap on the decoded feed and on the raw download (the real feed is ~2 MiB compressed, ~20 MiB decoded). */
+export const MAX_DECODED_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Decode a zstd frame in chunks, giving up as soon as the output passes
+ * `limit`, so a small compressed bomb never allocates its full size.
+ */
+function zstdDecodeBounded(bytes: Uint8Array, limit: number): Promise<Uint8Array> {
+	const { promise, resolve, reject } = Promise.withResolvers<Uint8Array>();
+	const d = createZstdDecompress();
+	const chunks: Buffer[] = [];
+	let total = 0;
+	let done = false;
+	const fail = (e: Error) => {
+		if (done) return;
+		done = true;
+		d.destroy();
+		reject(e);
+	};
+	d.on("data", (c: Buffer) => {
+		total += c.byteLength;
+		if (total > limit) return fail(new Error("feed too large"));
+		chunks.push(c);
+	});
+	d.on("error", (e: Error) => fail(e));
+	d.on("end", () => {
+		if (done) return;
+		done = true;
+		resolve(new Uint8Array(Buffer.concat(chunks, total)));
+	});
+	d.end(bytes);
+	return promise;
+}
+
+/** Read a response body, refusing more than `limit` bytes instead of buffering it all. */
+async function readBounded(response: Response, limit: number): Promise<Uint8Array> {
+	const declared = Number(response.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > limit) throw new Error("feed too large");
+	if (!response.body) return new Uint8Array(await response.arrayBuffer());
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for await (const chunk of response.body) {
+		total += chunk.byteLength;
+		if (total > limit) {
+			await response.body.cancel().catch(() => {});
+			throw new Error("feed too large");
+		}
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks, total);
+}
 
 interface FeedCost {
 	input?: unknown;
@@ -24,10 +75,9 @@ export type Feed = Map<string, Map<string, FeedCost>>;
  * Parse the Stencil catalog (`{<provider>: {models: {<id>: {cost?}}}}`).
  * Throws when the shape drifted: no provider with at least one priced model.
  */
-export function parseFeed(bytes: Uint8Array): Feed {
-	let raw = bytes;
-	if (ZSTD_MAGIC.every((b, i) => bytes[i] === b)) raw = Bun.zstdDecompressSync(bytes);
-	if (raw.byteLength > MAX_DECODED_BYTES) throw new Error("feed too large");
+export async function parseFeed(bytes: Uint8Array): Promise<Feed> {
+	if (bytes.byteLength > MAX_DECODED_BYTES) throw new Error("feed too large");
+	const raw = ZSTD_MAGIC.every((b, i) => bytes[i] === b) ? await zstdDecodeBounded(bytes, MAX_DECODED_BYTES) : bytes;
 	const json: unknown = JSON.parse(new TextDecoder().decode(raw));
 	if (typeof json !== "object" || json === null || Array.isArray(json)) throw new Error("feed: not an object");
 	const feed: Feed = new Map();
@@ -135,7 +185,7 @@ export async function loadFeed(
 	try {
 		const response = await fetchImpl(url, { headers, signal });
 		if (response.status === 200) {
-			fresh = { etag: response.headers.get("etag"), body: new Uint8Array(await response.arrayBuffer()) };
+			fresh = { etag: response.headers.get("etag"), body: await readBounded(response, MAX_DECODED_BYTES) };
 		} else if (response.status !== 304) {
 			throw new Error(`feed HTTP ${response.status}`);
 		}
@@ -144,7 +194,7 @@ export async function loadFeed(
 	}
 	if (fresh) {
 		try {
-			const feed = parseFeed(fresh.body);
+			const feed = await parseFeed(fresh.body);
 			await store.saveFeed(url, fresh);
 			return feed;
 		} catch (error) {
@@ -152,5 +202,5 @@ export async function loadFeed(
 		}
 	}
 	if (!cached) throw new Error("feed: no data");
-	return parseFeed(cached.body);
+	return await parseFeed(cached.body);
 }

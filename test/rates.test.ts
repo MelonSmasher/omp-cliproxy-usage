@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { RateModel } from "../src/contract";
 import { CpaClient } from "../src/cpa-client";
-import { parseFeed, resolveFromFeed } from "../src/feed";
+import { MAX_DECODED_BYTES, parseFeed, resolveFromFeed } from "../src/feed";
 import { cardToCost, rateSignature, resolveRates, type RateChainDeps } from "../src/rates";
 import type { OmpCost } from "../src/roster";
 import { resolveSettings } from "../src/settings";
@@ -74,8 +74,8 @@ describe("rateSignature", () => {
 	});
 });
 
-describe("feed", () => {
-	const feed = parseFeed(Bun.zstdCompressSync(new TextEncoder().encode(JSON.stringify(feedJson()))));
+describe("feed", async () => {
+	const feed = await parseFeed(Bun.zstdCompressSync(new TextEncoder().encode(JSON.stringify(feedJson()))));
 
 	test("unique exact id in anthropic|openai|google resolves; tiers take precedence over context_over_200k", () => {
 		const [gpt, claude] = resolveFromFeed(feed, ["gpt-x", "claude-y"], new Map());
@@ -99,8 +99,18 @@ describe("feed", () => {
 		expect(broken?.status).toBe("unknown");
 	});
 
-	test("shape drift is rejected", () => {
-		expect(() => parseFeed(new TextEncoder().encode(JSON.stringify({ openai: { models: { x: {} } } })))).toThrow();
+	test("shape drift is rejected", async () => {
+		await expect(parseFeed(new TextEncoder().encode(JSON.stringify({ openai: { models: { x: {} } } })))).rejects.toThrow();
+	});
+
+	// A few KB of zstd can expand to gigabytes; decoding must stop at the cap
+	// rather than allocate the whole thing first.
+	test("a zstd bomb is rejected without decoding it fully", async () => {
+		const bomb = Bun.zstdCompressSync(new Uint8Array(MAX_DECODED_BYTES * 3));
+		expect(bomb.byteLength).toBeLessThan(64 * 1024);
+		const before = process.memoryUsage().rss;
+		await expect(parseFeed(bomb)).rejects.toThrow("feed too large");
+		expect(process.memoryUsage().rss - before).toBeLessThan(MAX_DECODED_BYTES * 2);
 	});
 });
 
