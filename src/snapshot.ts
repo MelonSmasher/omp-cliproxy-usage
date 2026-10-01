@@ -36,7 +36,7 @@ export interface FeedCache {
 
 /**
  * Plugin data directory store. Holds only public data (rates, quota
- * percentages, exchange rates, the public pricing feed); no token, no key, no request content.
+ * percentages, exchange rates, the public pricing feed); no management key, no inference key, no request content.
  * Files are written atomically with mode 0600 inside a 0700 directory.
  */
 export class SnapshotStore {

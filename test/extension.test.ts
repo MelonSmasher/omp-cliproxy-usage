@@ -13,7 +13,7 @@ import extension from "../src/extension";
 import type { RegisteredModel } from "../src/roster";
 import { type CpaMock, startCpaMock } from "./fixtures/cpa-mock";
 import quotaFixture from "./fixtures/contract/quota.json";
-import { closedUrl, TOKEN } from "./helpers";
+import { closedUrl, KEY } from "./helpers";
 
 /** The contract example, observed just now. */
 function freshQuota() {
@@ -133,16 +133,63 @@ describe("extension factory", () => {
 	let mock: CpaMock | undefined;
 	beforeEach(async () => {
 		process.env.CPA_TEST_KEY = "inference-key-value";
-		process.env.CLIPROXY_USAGE_TOKEN = TOKEN;
+		process.env.CLIPROXY_MANAGEMENT_KEY = KEY;
 		await fs.rm(dataDir, { recursive: true, force: true });
 	});
 	afterEach(async () => {
 		await mock?.stop();
 		mock = undefined;
+		// Bun runs every test file in one process; `= undefined` would leave the
+		// string "undefined" set, so delete.
+		delete process.env.CPA_TEST_KEY;
+		delete process.env.CLIPROXY_MANAGEMENT_KEY;
 	});
 
+	for (const [status, setup] of [
+		[401, (_m: CpaMock) => (process.env.CLIPROXY_MANAGEMENT_KEY = "wrong-key-value-wrong-key-value")],
+		[403, (m: CpaMock) => (m.fault = "forbidden")],
+	] as const) {
+		test(`${status} → one warning, then no CPA request from any route or poll; snapshot rates keep pricing`, async () => {
+			mock = startCpaMock({ managementKey: KEY, quota: freshQuota() });
+			await writeConfig(mock.url, { reconcile: true, display: "both", currency: "EUR" });
+			const good = recorder();
+			await extension(good.pi);
+			await good.handlers.get("session_start")!({ type: "session_start" }, context().ctx); // good key: writes the rates/quota/fx snapshots
+			mock.seen.length = 0;
+			setup(mock);
+
+			const r = recorder();
+			await extension(r.pi);
+			expect(mock.seen).toHaveLength(1); // the startup `rates` call that got the 401/403
+			expect(r.registrations[0]!.config.models!.find(m => m.id === "gpt-6-sol")?.cost.input).toBe(2);
+
+			const ticks: (() => void)[] = [];
+			const sessionEntries: unknown[] = [
+				{ type: "custom", customType: "cliproxy-usage/trace", data: { trace: TRACE }, timestamp: new Date(Date.now() - 1000).toISOString() },
+			];
+			const { ctx, ui } = context(sessionEntries);
+			const polling = { ...ctx, setInterval: (fn: () => void) => ticks.push(fn) };
+			await r.handlers.get("session_start")!({ type: "session_start" }, polling);
+			expect(ticks).toHaveLength(1);
+			for (let i = 0; i < 3; i++) {
+				ticks[0]!();
+				await r.handlers.get("agent_end")!({ type: "agent_end", messages: [] }, polling);
+				await (r.registrations.at(-1)!.config.usage as UsageProvider).fetchUsage(params, usageCtx);
+			}
+			await r.commands.get("cliproxy-usage")!("refresh", polling);
+			expect(mock.seen).toHaveLength(1);
+
+			const stopped = r.warnings.filter(w => w.includes("stopped all CPA requests"));
+			expect(stopped).toHaveLength(1);
+			expect(stopped[0]).toContain(status === 401 ? "management key rejected (401)" : "(403)");
+			expect(r.warnings.filter(w => w.includes(`(${status})`))).toHaveLength(1);
+			expect(ui.status.at(-1)).toContain("Codex 5h 42%"); // cached quota still shown
+			expect(JSON.stringify([r.warnings, ui])).not.toContain(KEY);
+		});
+	}
+
 	test("registers every model with CPA rates (unknown keeps cost 0) plus the quota provider, in the factory", async () => {
-		mock = startCpaMock({ token: TOKEN });
+		mock = startCpaMock({ managementKey: KEY });
 		await writeConfig(mock.url, {});
 		const r = recorder();
 		await extension(r.pi);
@@ -171,7 +218,7 @@ describe("extension factory", () => {
 	});
 
 	test("apiKeyEnv unset → nothing registered, one warning, command still answers", async () => {
-		mock = startCpaMock({ token: TOKEN });
+		mock = startCpaMock({ managementKey: KEY });
 		await writeConfig(mock.url, { apiKeyEnv: "" });
 		const r = recorder();
 		await extension(r.pi);
@@ -183,7 +230,7 @@ describe("extension factory", () => {
 	});
 
 	test("CPA slow at startup → factory returns within the budget and prices from the snapshot", async () => {
-		mock = startCpaMock({ token: TOKEN, slowMs: 5_000 });
+		mock = startCpaMock({ managementKey: KEY, slowMs: 5_000 });
 		await writeConfig(mock.url, { startupTimeoutMs: 300 });
 		await extension(recorder().pi); // writes the snapshot
 		mock.fault = "slow";
@@ -207,8 +254,8 @@ describe("extension factory", () => {
 		expect(r.warnings.some(w => w.startsWith("[omp-cliproxy-usage] no rates available"))).toBe(true);
 	});
 
-	test("session: status line, reconciliation via trace entries, /cliproxy-usage report; token never leaks", async () => {
-		mock = startCpaMock({ token: TOKEN, quota: freshQuota() });
+	test("session: status line, reconciliation via trace entries, /cliproxy-usage report; key never leaks", async () => {
+		mock = startCpaMock({ managementKey: KEY, quota: freshQuota() });
 		await writeConfig(mock.url, { reconcile: true, display: "both" });
 		const r = recorder();
 		await extension(r.pi);
@@ -251,11 +298,11 @@ describe("extension factory", () => {
 		expect(second.ui.status.at(-1)).toContain("cpa $0.0026");
 
 		const everything = JSON.stringify([r.registrations, r.entries, ui, r.warnings, second.ui]) + (await allFiles(agentDir)) + (await allFiles(path.dirname(lockfile)));
-		expect(everything).not.toContain(TOKEN);
+		expect(everything).not.toContain(KEY);
 	});
 
 	test("an unchanged rate set is not re-registered on refresh; a changed card is", async () => {
-		mock = startCpaMock({ token: TOKEN });
+		mock = startCpaMock({ managementKey: KEY });
 		await writeConfig(mock.url, {});
 		const r = recorder();
 		await extension(r.pi);
@@ -275,7 +322,7 @@ describe("extension factory", () => {
 	});
 
 	test("currency: status/widget/report in EUR with the rate date; registered omp costs stay USD; CPA down → fx snapshot", async () => {
-		mock = startCpaMock({ token: TOKEN, quota: freshQuota() });
+		mock = startCpaMock({ managementKey: KEY, quota: freshQuota() });
 		await writeConfig(mock.url, { reconcile: true, display: "both", currency: "EUR" });
 		const r = recorder();
 		await extension(r.pi);
@@ -305,11 +352,11 @@ describe("extension factory", () => {
 		const second = context(sessionEntries);
 		await down.handlers.get("session_start")!({ type: "session_start" }, second.ctx);
 		expect((second.ui.widgets.at(-1) as string[]).at(-1)).toBe("session omp €0.0023 · cpa pending · ECB rate 2026-09-30, cached");
-		expect(await fs.readFile(path.join(dataDir, "fx.json"), "utf8")).not.toContain(TOKEN);
+		expect(await fs.readFile(path.join(dataDir, "fx.json"), "utf8")).not.toContain(KEY);
 	});
 
 	test("currency without a rate → USD with one warning, however often it renders", async () => {
-		mock = startCpaMock({ token: TOKEN, quota: freshQuota() });
+		mock = startCpaMock({ managementKey: KEY, quota: freshQuota() });
 		await writeConfig(mock.url, { reconcile: true, currency: "GBP" });
 		const r = recorder();
 		await extension(r.pi);

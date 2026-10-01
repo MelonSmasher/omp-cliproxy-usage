@@ -4,7 +4,7 @@ import { CpaClient } from "../src/cpa-client";
 import { CACHED_NOTE, createQuotaProvider, PASSIVE_NOTE, quotaToReport } from "../src/quota";
 import quotaFixture from "./fixtures/contract/quota.json";
 import { type CpaMock, startCpaMock } from "./fixtures/cpa-mock";
-import { closedUrl, TOKEN } from "./helpers";
+import { closedUrl, KEY } from "./helpers";
 
 const quota = quotaFixture as QuotaResponse;
 const OBSERVED = Date.parse("2026-09-30T17:56:39.386Z");
@@ -86,17 +86,17 @@ describe("createQuotaProvider", () => {
 	const ctx = { fetch: (i: string | URL | Request, init?: RequestInit) => fetch(i, init) };
 
 	test("declares last-good retention and a failure backoff", () => {
-		const p = createQuotaProvider({ provider: "px", client: new CpaClient({ baseUrl: "http://127.0.0.1:1", token: () => TOKEN }), staleAfterMs: STALE_AFTER });
+		const p = createQuotaProvider({ provider: "px", client: new CpaClient({ baseUrl: "http://127.0.0.1:1", managementKey: () => KEY }), staleAfterMs: STALE_AFTER });
 		expect(p.retainLastGoodOnFailure).toBe(true);
 		expect(p.failureBackoffMs).toBeGreaterThan(0);
 	});
 
-	test("fetches quota with the read token, never the inference credential", async () => {
-		mock = startCpaMock({ token: TOKEN });
+	test("fetches quota with the management key, never the inference credential", async () => {
+		mock = startCpaMock({ managementKey: KEY });
 		let seen: QuotaResponse | undefined;
 		const p = createQuotaProvider({
 			provider: "px",
-			client: new CpaClient({ baseUrl: mock.url, token: () => TOKEN }),
+			client: new CpaClient({ baseUrl: mock.url, managementKey: () => KEY }),
 			staleAfterMs: STALE_AFTER,
 			onQuota: q => {
 				seen = q;
@@ -109,22 +109,22 @@ describe("createQuotaProvider", () => {
 		expect(JSON.stringify(report)).not.toContain("inference-key-must-not-leak");
 	});
 
-	test("missing token → null (no request); unreachable CPA → cached payload marked stale", async () => {
-		mock = startCpaMock({ token: TOKEN });
+	test("missing key → null (no request); unreachable CPA → cached payload marked stale", async () => {
+		mock = startCpaMock({ managementKey: KEY });
 		const errors: string[] = [];
 		const noToken = createQuotaProvider({
 			provider: "px",
-			client: new CpaClient({ baseUrl: mock.url, token: () => undefined }),
+			client: new CpaClient({ baseUrl: mock.url, managementKey: () => undefined }),
 			staleAfterMs: STALE_AFTER,
 			onError: e => errors.push(e),
 		});
 		expect(await noToken.fetchUsage(params, ctx)).toBeNull();
 		expect(mock.seen).toEqual([]);
-		expect(errors[0]).toContain("read token not set");
+		expect(errors[0]).toContain("management key not set");
 
 		const down = createQuotaProvider({
 			provider: "px",
-			client: new CpaClient({ baseUrl: await closedUrl(), token: () => TOKEN }),
+			client: new CpaClient({ baseUrl: await closedUrl(), managementKey: () => KEY }),
 			staleAfterMs: STALE_AFTER,
 			fallback: async () => quota,
 			now: () => OBSERVED,

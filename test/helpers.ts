@@ -2,8 +2,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-/** 64-hex sentinel token; tests assert it never appears in any output. */
-export const TOKEN = "5e1f7c0ffee0ddba11deadbeefcafe0123456789abcdef0123456789abcdef01";
+/** 64-hex sentinel management key; tests assert it never appears in any output. */
+export const KEY = "5e1f7c0ffee0ddba11deadbeefcafe0123456789abcdef0123456789abcdef01";
 
 export async function tempDir(): Promise<string> {
 	return fs.mkdtemp(path.join(os.tmpdir(), "omp-cliproxy-usage-test-"));

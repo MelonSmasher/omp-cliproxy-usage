@@ -9,7 +9,8 @@ export type DisplayMode = "status" | "widget" | "both" | "off";
 export interface Settings {
 	provider: string;
 	baseUrl: string | undefined;
-	tokenEnv: string;
+	/** Env var holding CPA's management key (the data API is a CPA management route). */
+	managementKeyEnv: string;
 	apiKeyEnv: string | undefined;
 	rates: RatesMode;
 	feedUrl: string;
@@ -28,7 +29,7 @@ export interface Settings {
 export const DEFAULTS: Readonly<Omit<Settings, "aliases">> = {
 	provider: "cliproxy",
 	baseUrl: undefined,
-	tokenEnv: "CLIPROXY_USAGE_TOKEN",
+	managementKeyEnv: "CLIPROXY_MANAGEMENT_KEY",
 	apiKeyEnv: undefined,
 	rates: "cpa",
 	feedUrl: DEFAULT_FEED_URL,
@@ -80,7 +81,7 @@ export function resolveSettings(raw: Record<string, unknown>): ResolvedSettings 
 		reject(key, "expected a non-empty string");
 		return fallback;
 	};
-	const envName = (key: "tokenEnv" | "apiKeyEnv"): string | undefined => {
+	const envName = (key: "managementKeyEnv" | "apiKeyEnv"): string | undefined => {
 		const v = raw[key];
 		if (v === undefined || v === "") return DEFAULTS[key];
 		if (typeof v === "string" && ENV_NAME.test(v.trim())) return v.trim();
@@ -148,7 +149,7 @@ export function resolveSettings(raw: Record<string, unknown>): ResolvedSettings 
 		settings: {
 			provider: str("provider", DEFAULTS.provider),
 			baseUrl,
-			tokenEnv: envName("tokenEnv") ?? DEFAULTS.tokenEnv,
+			managementKeyEnv: envName("managementKeyEnv") ?? DEFAULTS.managementKeyEnv,
 			apiKeyEnv: envName("apiKeyEnv"),
 			rates,
 			feedUrl: URL.canParse(feedUrl) ? feedUrl : DEFAULTS.feedUrl,
@@ -190,8 +191,8 @@ export async function loadSettings(cwd: string): Promise<ResolvedSettings> {
 	return resolveSettings(await getPluginSettings(PLUGIN_NAME, cwd));
 }
 
-/** The read token, read from the environment on every call; never stored. */
-export function readToken(s: Pick<Settings, "tokenEnv">): string | undefined {
-	const value = process.env[s.tokenEnv];
+/** CPA's management key, read from the environment on every call; never stored. */
+export function managementKey(s: Pick<Settings, "managementKeyEnv">): string | undefined {
+	const value = process.env[s.managementKeyEnv];
 	return value && value.trim() !== "" ? value.trim() : undefined;
 }

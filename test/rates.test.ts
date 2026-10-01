@@ -10,7 +10,7 @@ import { resolveSettings } from "../src/settings";
 import { SnapshotStore } from "../src/snapshot";
 import ratesFixture from "./fixtures/contract/rates.json";
 import { type CpaMock, startCpaMock } from "./fixtures/cpa-mock";
-import { closedUrl, feedJson, TOKEN, tempDir } from "./helpers";
+import { closedUrl, feedJson, KEY, tempDir } from "./helpers";
 
 const ZERO: OmpCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const card = (over: Partial<RateModel>): RateModel => ({
@@ -143,14 +143,14 @@ describe("resolveRates chain", () => {
 		return {
 			settings,
 			baseUrl,
-			client: new CpaClient({ baseUrl, token: () => TOKEN, timeoutMs: 2_000 }),
+			client: new CpaClient({ baseUrl, managementKey: () => KEY, timeoutMs: 2_000 }),
 			store: new SnapshotStore(dir ?? (await tempDir())),
 			fetch: (i, init) => fetch(i, init),
 		};
 	};
 
-	test("cpa ok → cards for the requested ids and a snapshot written without the token", async () => {
-		mock = startCpaMock({ token: TOKEN });
+	test("cpa ok → cards for the requested ids and a snapshot written without the key", async () => {
+		mock = startCpaMock({ managementKey: KEY });
 		const d = await deps(mock.url, {});
 		const { rates, errors } = await resolveRates(d, ["gpt-6-sol", "new-model"]);
 		expect(errors).toEqual([]);
@@ -159,12 +159,12 @@ describe("resolveRates chain", () => {
 		expect(rates?.cards.get("new-model")?.status).toBe("unknown");
 		const onDisk = await fs.readFile(path.join(d.store.dir, "rates.json"), "utf8");
 		expect(onDisk).toContain("rc_4f1a9c2e0b7d");
-		expect(onDisk).not.toContain(TOKEN);
+		expect(onDisk).not.toContain(KEY);
 		expect((await fs.stat(path.join(d.store.dir, "rates.json"))).mode & 0o777).toBe(0o600);
 	});
 
 	test("cpa down → last snapshot (any age) with the failure noted", async () => {
-		mock = startCpaMock({ token: TOKEN });
+		mock = startCpaMock({ managementKey: KEY });
 		const dir = await tempDir();
 		const url = mock.url;
 		await resolveRates(await deps(url, {}, dir), ["gpt-6-sol"]);
@@ -177,7 +177,7 @@ describe("resolveRates chain", () => {
 	});
 
 	test("a snapshot from another CPA base URL is not used; the feed is, and its ETag is honored", async () => {
-		mock = startCpaMock({ token: TOKEN });
+		mock = startCpaMock({ managementKey: KEY });
 		const dir = await tempDir();
 		await resolveRates(await deps(mock.url, {}, dir), ["gpt-6-sol"]);
 		const feed = startFeed();
@@ -193,14 +193,14 @@ describe("resolveRates chain", () => {
 	});
 
 	test("rates=off → no cards and no network", async () => {
-		mock = startCpaMock({ token: TOKEN });
+		mock = startCpaMock({ managementKey: KEY });
 		const { rates } = await resolveRates(await deps(mock.url, { rates: "off" }), ["gpt-6-sol"]);
 		expect(rates).toBeNull();
 		expect(mock.seen).toEqual([]);
 	});
 
 	test("the startup budget bounds a slow CPA and the chain still falls back to the snapshot", async () => {
-		mock = startCpaMock({ token: TOKEN, slowMs: 3_000 });
+		mock = startCpaMock({ managementKey: KEY, slowMs: 3_000 });
 		const dir = await tempDir();
 		await resolveRates(await deps(mock.url, {}, dir), ["gpt-6-sol"]);
 		mock.fault = "slow";

@@ -60,7 +60,7 @@ export function driftPct(cpaUsd: number, ompUsd: number): number | null {
 }
 
 /**
- * Per-session reconciliation state. Holds trace ids only (no token, no
+ * Per-session reconciliation state. Holds trace ids only (no key, no
  * request content); persistence is the caller's `appendEntry`.
  */
 export class Reconciler {

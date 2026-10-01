@@ -1,11 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULTS, readToken, resolveSettings } from "../src/settings";
+import { DEFAULTS, managementKey, resolveSettings } from "../src/settings";
 
 describe("resolveSettings", () => {
 	test("empty input yields the documented defaults", () => {
 		const { settings, warnings } = resolveSettings({});
 		expect(warnings).toEqual([]);
 		expect(settings).toMatchObject({ ...DEFAULTS, aliases: new Map() });
+	});
+
+	test("the management key env var defaults to CLIPROXY_MANAGEMENT_KEY and accepts only env var names", () => {
+		expect(resolveSettings({}).settings.managementKeyEnv).toBe("CLIPROXY_MANAGEMENT_KEY");
+		expect(resolveSettings({ managementKeyEnv: " CPA_KEY " }).settings.managementKeyEnv).toBe("CPA_KEY");
+		const bad = resolveSettings({ managementKeyEnv: "not a name; secret-looking-value" });
+		expect(bad.settings.managementKeyEnv).toBe("CLIPROXY_MANAGEMENT_KEY");
+		expect(bad.warnings).toHaveLength(1);
+		expect(bad.warnings[0]).not.toContain("secret-looking-value");
 	});
 
 	test("invalid values fall back to defaults with one warning each, never echoing the value", () => {
@@ -60,13 +69,13 @@ describe("resolveSettings", () => {
 	});
 });
 
-describe("readToken", () => {
+describe("managementKey", () => {
 	test("reads the named env var at call time; blank means unset", () => {
-		process.env.OCU_TEST_TOKEN = "  ";
-		expect(readToken({ tokenEnv: "OCU_TEST_TOKEN" })).toBeUndefined();
-		process.env.OCU_TEST_TOKEN = "abc";
-		expect(readToken({ tokenEnv: "OCU_TEST_TOKEN" })).toBe("abc");
-		delete process.env.OCU_TEST_TOKEN;
-		expect(readToken({ tokenEnv: "OCU_TEST_TOKEN" })).toBeUndefined();
+		process.env.OCU_TEST_KEY = "  ";
+		expect(managementKey({ managementKeyEnv: "OCU_TEST_KEY" })).toBeUndefined();
+		process.env.OCU_TEST_KEY = "abc";
+		expect(managementKey({ managementKeyEnv: "OCU_TEST_KEY" })).toBe("abc");
+		delete process.env.OCU_TEST_KEY;
+		expect(managementKey({ managementKeyEnv: "OCU_TEST_KEY" })).toBeUndefined();
 	});
 });

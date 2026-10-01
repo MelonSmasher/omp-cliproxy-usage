@@ -1,8 +1,9 @@
-// Types and runtime guards for the cliproxy-costs read API (schema 1).
+// Types and runtime guards for the cliproxy-costs data API (schema 1), served
+// under CPA's management API and authenticated by CPA with the management key.
 // Hand-written on purpose: the plugin has no runtime dependencies.
 
 export const CONTRACT_SCHEMA = 1;
-export const READ_API_PREFIX = "/v0/resource/plugins/cliproxy-costs/api/v1";
+export const API_PREFIX = "/v0/management/cliproxy-costs/v1";
 
 export interface Rates {
 	input?: number;
@@ -61,6 +62,8 @@ export interface QuotaCredits {
 
 export interface QuotaCredential {
 	credential: string;
+	/** Raw CPA auth id (may contain file names or e-mail addresses); display only. */
+	auth_id?: string;
 	provider: string;
 	label: string;
 	observed_at: string;
@@ -92,6 +95,8 @@ export interface Attempt {
 	model: string;
 	response_model: string | null;
 	credential: string | null;
+	/** Raw CPA auth id (may contain file names or e-mail addresses); display only. */
+	auth_id?: string;
 	client: string | null;
 	stream: boolean;
 	failed: boolean;
